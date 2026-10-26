@@ -88,11 +88,14 @@
     if (cb && outputUnit==='original' && unit==='counts' && Number.isFinite(ca.gain) && Number.isFinite(cb.gain) && ca.gain!==cb.gain) throw new Error('두 채널의 Gain이 다릅니다. 표시 단위를 µV로 바꾸세요.');
     const fa=factor(data,ca,inputUnit,outputUnit), fb=cb ? factor(data,cb,inputUnit,outputUnit) : 0;
     const values=Float64Array.from(ca.values,(v,i) => cb ? v*fa-cb.values[i]*fb : v*fa);
+    return summarize(values);
+  }
+  function summarize(values) {
     let min=Infinity,max=-Infinity,valid=0;
     for(const v of values) if(Number.isFinite(v)) { min=Math.min(min,v); max=Math.max(max,v); valid++; }
     return {values,min,max,valid,center:valid ? (min+max)/2 : 0,span:valid ? Math.max(max-min,1e-9) : 1};
   }
   function lowerBound(times,t) { let lo=0,hi=times.length; while(lo<hi) {const m=(lo+hi)>>>1; if(times[m]<t)lo=m+1;else hi=m;}return lo; }
   function viewport(start,span,duration) { span=Math.min(Math.max(span,Math.min(.05,duration)),duration); return {start:Math.max(0,Math.min(start,duration-span)),span}; }
-  return {parse,timeAxis,signal,factor,lowerBound,viewport};
+  return {parse,timeAxis,signal,factor,lowerBound,viewport,summarize};
 });
