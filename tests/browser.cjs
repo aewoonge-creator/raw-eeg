@@ -1,0 +1,60 @@
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
+const {pathToFileURL} = require('node:url');
+const {chromium} = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
+(async()=>{
+  const browser=await chromium.launch({channel:'msedge',headless:true});
+  const page=await browser.newPage({viewport:{width:1440,height:1000},deviceScaleFactor:1});
+  const errors=[];page.on('pageerror',e=>errors.push(e.message));
+  const out=path.resolve(__dirname,'../test-results');fs.mkdirSync(out,{recursive:true});
+  try {
+    await page.goto(pathToFileURL(path.resolve(__dirname,'../index.html')).href);
+    assert.equal(await page.title(),'raw EEG');
+    await page.getByRole('button',{name:'데모',exact:true}).click();
+    await page.waitForFunction(()=>state.data?.count===22500 && state.traces.length===8);
+    assert.equal(await page.locator('#notice').isVisible(),false);
+    assert.match(await page.locator('#status').textContent(),/합성 데모/);
+    const pixels=await page.locator('#plot').evaluate(canvas=>{const c=canvas.getContext('2d'),p=c.getImageData(0,0,canvas.width,canvas.height).data;let dark=0;for(let i=0;i<p.length;i+=4)if(p[i]<80&&p[i+1]<100&&p[i+2]<100)dark++;return dark;});
+    assert.ok(pixels>5000,`Nonblank waveform: ${pixels}`);
+    await page.screenshot({path:path.join(out,'raw-desktop.png'),fullPage:true});
+    await page.locator('#bipolarTab').click();await page.locator('#addPair').click();
+    assert.equal(await page.locator('.pair').count(),8);assert.equal(await page.locator('#addPair').isDisabled(),true);
+    const actual=await page.evaluate(()=>({got:state.traces[0].values[234],want:state.data.channels[0].values[234]-state.data.channels[1].values[234]}));assert.equal(actual.got,actual.want);
+    await page.getByRole('textbox',{name:'ch1 전극명',exact:true}).fill('Fp1-left');assert.match(await page.evaluate(()=>state.traces[0].name),/Fp1-left/);
+    const box=await page.locator('#selection').boundingBox();await page.mouse.move(box.x+box.width/2,box.y+box.height/2);await page.mouse.down();await page.mouse.move(box.x+box.width/2+220,box.y+box.height/2,{steps:15});await page.mouse.up();
+    assert.ok(await page.evaluate(()=>state.start)>15);
+    const right=await page.locator('#rightHandle').boundingBox(),oldSpan=await page.evaluate(()=>state.span);
+    await page.mouse.move(right.x+right.width/2,right.y+25);await page.mouse.down();await page.mouse.move(right.x+right.width/2+55,right.y+25,{steps:5});await page.mouse.up();
+    assert.ok(await page.evaluate(()=>state.span)>oldSpan);
+    await page.locator('#start').fill('26');await page.locator('#start').dispatchEvent('change');assert.equal(await page.evaluate(()=>state.start),26);
+    await page.locator('#window').fill('10');await page.locator('#window').dispatchEvent('change');
+    await page.screenshot({path:path.join(out,'bipolar-desktop.png'),fullPage:true});
+    await page.getByRole('combobox',{name:'Bipolar 1 전극 B',exact:true}).selectOption('0');assert.match(await page.locator('#notice').textContent(),/서로 다른/);
+    await page.getByRole('combobox',{name:'Bipolar 1 전극 B',exact:true}).selectOption('1');
+    const beforePlay=await page.evaluate(()=>state.start);
+    await page.locator('#play').click();await page.waitForTimeout(350);
+    const afterPlay=await page.evaluate(()=>({start:state.start,playing:state.playing,span:state.span}));
+    assert.ok(afterPlay.start>beforePlay,JSON.stringify({beforePlay,afterPlay,errors}));await page.locator('#play').click();
+    const download=page.waitForEvent('download');await page.locator('#export').click();const dl=await download;await dl.saveAs(path.join(out,'export.png'));
+    assert.ok(fs.statSync(path.join(out,'export.png')).size>5000);
+    await page.setViewportSize({width:390,height:844});await page.waitForTimeout(150);
+    assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),true);
+    await page.screenshot({path:path.join(out,'bipolar-mobile.png'),fullPage:true});
+    await page.locator('#rawTab').click();await page.screenshot({path:path.join(out,'raw-mobile.png'),fullPage:true});
+    // Nine source columns: only eight can be displayed, without losing the ninth column.
+    const names=Array.from({length:9},(_,i)=>`ch${i+1}`),rows=['t_us,'+names.join(',')];
+    for(let i=0;i<1000;i++)rows.push([i*4000,...names.map((_,j)=>i+j)].join(','));
+    await page.locator('#file').setInputFiles({name:'nine.csv',mimeType:'text/csv',buffer:Buffer.from(rows.join('\n'))});
+    await page.waitForFunction(()=>state.data?.channels.length===9);
+    await page.locator('#ch-8').click();assert.equal(await page.locator('#ch-8').isChecked(),false);assert.match(await page.locator('#notice').textContent(),/최대 8/);
+    await page.locator('#ch-0').uncheck();await page.locator('#ch-8').check();assert.equal(await page.evaluate(()=>state.traces.length),8);
+    await page.locator('#bipolarTab').click();assert.equal(await page.locator('.pair').count(),8);
+    await page.locator('#file').setInputFiles({name:'bad.csv',mimeType:'text/csv',buffer:Buffer.from('ch1,ch2\n1,2\n3')});
+    await page.waitForFunction(()=>document.getElementById('notice').textContent.includes('열 개수'));assert.equal(await page.evaluate(()=>state.data.count),1000);
+    const bench=process.env.RAW_EEG_TEST_CSV;
+    if(bench){await page.locator('#file').setInputFiles(bench);await page.waitForFunction(()=>document.getElementById('filename').textContent.includes('internal-test'));assert.equal(await page.evaluate(()=>state.data.channels.length),8);assert.equal(await page.locator('#notice').isVisible(),false);}
+    assert.deepEqual(errors,[]);
+    console.log(JSON.stringify({result:'PASS',browserErrors:errors,tracePixels:pixels,checks:'file:// offline; CSV import; 8 raw and 8 bipolar; exact subtraction; labels; timeline drag/resize; playback; PNG; 390px layout; malformed files; 9-channel limit',screenshots:out},null,2));
+  }finally{await browser.close();}
+})().catch(e=>{console.error(e);process.exitCode=1;});

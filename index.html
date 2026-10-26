@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>raw EEG</title><link rel="stylesheet" href="styles.css">
+  <script defer src="vendor/papaparse.min.js"></script><script defer src="vendor/lucide.min.js"></script>
+  <script defer src="core.js"></script><script defer src="app.js"></script>
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand"><i data-lucide="activity"></i><h1>raw EEG</h1><span class="tag">CSV VIEWER</span></div>
+    <div class="file-actions"><button id="demo"><i data-lucide="flask-conical"></i><span>데모</span></button><button id="open" class="primary"><i data-lucide="folder-open"></i><span>CSV 열기</span></button><input id="file" type="file" accept=".csv,.tsv,.txt,text/csv" hidden></div>
+  </header>
+  <div class="workspace">
+    <aside>
+      <section class="file-info"><h2>기록</h2><strong id="filename">파일 미선택</strong><dl><div><dt>기록 길이</dt><dd id="duration">—</dd></div><div><dt>샘플 / 채널</dt><dd id="samples">—</dd></div><div><dt>시간 기준</dt><dd id="timeSource">—</dd></div></dl></section>
+      <section>
+        <div class="section-heading"><h2>전극 매핑</h2><span id="channelCount">0</span></div>
+        <div id="electrodes" class="electrodes"><p class="muted">CSV 미선택</p></div>
+      </section>
+      <section id="montageSection" hidden>
+        <div class="section-heading"><h2>Bipolar montage</h2><span>A − B</span></div>
+        <div id="pairs"></div>
+        <button id="addPair" class="add"><i data-lucide="plus"></i>쌍 추가</button>
+      </section>
+      <section>
+        <details><summary>CSV / 시간 설정</summary>
+          <label>시간 열<select id="timeColumn"><option value="-1">행 순서 / 샘플 번호</option></select></label>
+          <label>시간 단위<select id="timeUnit"><option value="auto">자동</option><option value="s">초 (s)</option><option value="ms">밀리초 (ms)</option><option value="us">마이크로초 (µs)</option></select></label>
+          <label>샘플링 주파수 (Hz)<input id="rate" type="number" value="250" min="0.01" step="any"></label>
+          <label>CSV 입력 단위<select id="inputUnit"><option value="auto">메타데이터 자동</option><option value="counts">ADC counts</option><option value="uv">µV</option><option value="mv">mV</option><option value="v">V</option><option value="unknown">미지정</option></select></label>
+          <button id="applyTime"><i data-lucide="check"></i>적용</button>
+        </details>
+      </section>
+      <div class="local-mark"><i data-lucide="hard-drive"></i>로컬 파일 · 필터 없음</div>
+    </aside>
+    <main>
+      <div class="viewbar"><div class="tabs" role="tablist" aria-label="파형 모드"><button id="rawTab" role="tab" aria-selected="true">Raw</button><button id="bipolarTab" role="tab" aria-selected="false">Bipolar</button></div><span id="viewCount" class="muted">0 / 8 traces</span><button id="export" class="icon-button" title="현재 파형 PNG 저장" aria-label="현재 파형 PNG 저장" disabled><i data-lucide="download"></i></button></div>
+      <div class="toolbar">
+        <label>구간<input id="window" type="number" value="10" min="0.05" step="1"><span>s</span></label>
+        <label>표시 단위<select id="outputUnit"><option value="original">CSV 원본</option><option value="uv">µV</option></select></label>
+        <label>세로 배율<select id="scale"><option value="auto">자동 / 채널별</option><option value="10">10 / div</option><option value="20">20 / div</option><option value="50">50 / div</option><option value="100">100 / div</option><option value="500">500 / div</option><option value="1000">1000 / div</option><option value="10000">10000 / div</option></select></label>
+        <label>표시 기준선<select id="baseline"><option value="center">채널 중앙</option><option value="zero">0</option></select></label>
+      </div>
+      <div id="notice" role="status" hidden></div>
+      <section class="recording">
+        <div class="plot-heading"><h2 id="plotTitle">Raw traces</h2><span id="interval">00:00.000 – 00:10.000</span></div>
+        <div id="plotWrap"><canvas id="plot" aria-label="채널별 EEG 원본 파형"></canvas><div id="empty"><i data-lucide="file-chart-line"></i><strong>CSV 파일 열기</strong><button id="emptyOpen">파일 선택</button></div><output id="cursor" hidden></output></div>
+        <div class="plot-footer"><span id="unitLabel">단위 미지정</span><span id="baselineLabel">표시 기준선: 채널 중앙</span></div>
+      </section>
+      <section class="navigation" aria-label="시간 탐색">
+        <div class="navigation-heading"><h2>기록 타임라인</h2><span id="totalTime">00:00.000</span></div>
+        <div id="timeline"><canvas id="overview" aria-hidden="true"></canvas><div id="selection" hidden><div id="leftHandle" class="handle" title="구간 시작 조절"></div><span></span><div id="rightHandle" class="handle" title="구간 끝 조절"></div></div></div>
+        <input id="seek" type="range" min="0" max="0" step="0.001" value="0" aria-label="표시 구간 시작 시간" disabled>
+        <div class="transport"><button id="prev" class="icon-button" title="이전 구간" aria-label="이전 구간" disabled><i data-lucide="chevron-left"></i></button><button id="play" class="icon-button" title="재생 / 일시정지" aria-label="재생 / 일시정지" disabled><i data-lucide="play"></i></button><button id="next" class="icon-button" title="다음 구간" aria-label="다음 구간" disabled><i data-lucide="chevron-right"></i></button><label>시작<input id="start" type="number" min="0" step="0.1" value="0"><span>s</span></label><span id="position">—</span></div>
+      </section>
+      <footer><span id="status" role="status">대기</span><span>raw EEG · 01</span></footer>
+    </main>
+  </div>
+</body>
+</html>
