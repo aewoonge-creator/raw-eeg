@@ -2,10 +2,10 @@
 <html lang="ko">
 <head>
   <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>raw EEG</title><link rel="stylesheet" href="styles.css?v=filters-v2">
+  <title>raw EEG</title><link rel="stylesheet" href="styles.css?v=line-noise-v1">
   <script defer src="vendor/papaparse.min.js"></script><script defer src="vendor/lucide.min.js"></script>
-  <script defer src="vendor/fili.min.js"></script><script defer src="filters.js"></script>
-  <script defer src="core.js?v=filters-v2"></script><script defer src="app.js?v=filters-v2"></script>
+  <script defer src="vendor/fili.min.js"></script><script defer src="vendor/dpss.js"></script><script defer src="line-noise.js?v=line-noise-v1"></script><script defer src="filters.js?v=line-noise-v1"></script><script defer src="spectrum.js?v=line-noise-v1"></script>
+  <script defer src="core.js?v=line-noise-v1"></script><script defer src="app.js?v=line-noise-v1"></script>
 </head>
 <body>
   <header class="topbar">
@@ -36,14 +36,18 @@
       <div class="local-mark"><i data-lucide="hard-drive"></i>로컬 파일 · 원본 보존</div>
     </aside>
     <main>
-      <div class="viewbar"><div class="tabs" role="tablist" aria-label="전극 구성"><button id="rawTab" role="tab" aria-selected="true">채널</button><button id="bipolarTab" role="tab" aria-selected="false">Bipolar</button></div><div class="tabs processing" role="tablist" aria-label="필터 보기"><button id="rawView" role="tab" aria-selected="true">Raw</button><button id="filteredView" role="tab" aria-selected="false">Filtered</button></div><span id="viewCount" class="muted">0 / 8 traces</span><button id="export" class="icon-button" title="현재 파형 PNG 저장" aria-label="현재 파형 PNG 저장" disabled><i data-lucide="download"></i></button></div>
+      <div class="viewbar"><div class="tabs" role="tablist" aria-label="전극 구성"><button id="rawTab" role="tab" aria-selected="true">채널</button><button id="bipolarTab" role="tab" aria-selected="false">Bipolar</button></div><div class="tabs processing" role="tablist" aria-label="필터 보기"><button id="rawView" role="tab" aria-selected="true">Raw</button><button id="filteredView" role="tab" aria-selected="false">Filtered</button><button id="compareView" role="tab" aria-selected="false">비교</button></div><span id="viewCount" class="muted">0 / 8 traces</span><button id="export" class="icon-button" title="현재 파형 PNG 저장" aria-label="현재 파형 PNG 저장" disabled><i data-lucide="download"></i></button></div>
       <div class="filterbar" aria-label="필터 설정">
         <div class="filter-control"><label><input id="hpOn" type="checkbox" checked>HPF</label><input id="hpHz" type="number" min="0.01" step="0.1" value="0.5" aria-label="HPF 주파수"><span>Hz</span></div>
         <div class="filter-control"><label><input id="lpOn" type="checkbox" checked>LPF</label><input id="lpHz" type="number" min="0.01" step="1" value="45" aria-label="LPF 주파수"><span>Hz</span></div>
-        <div class="filter-control"><label><input id="notchOn" type="checkbox" checked>Notch</label><select id="notchHz" aria-label="Notch 주파수"><option value="60">60 Hz</option><option value="50">50 Hz</option><option value="both">50 + 60 Hz</option></select><label>Q<input id="notchQ" type="number" min="1" max="100" step="1" value="30"></label></div>
+        <div class="filter-control"><label><input id="notchOn" type="checkbox" checked>전원 잡음</label><select id="notchHz" aria-label="전원 잡음 주파수"><option value="60">60 Hz</option><option value="50">50 Hz</option><option value="both">50 + 60 Hz</option></select></div>
+        <div class="filter-control"><select id="lineMethod" aria-label="전원 잡음 제거 방식"><option value="notch">Notch</option><option value="multitaper">Multitaper 회귀 (PREP 참고)</option></select><label>Notch Q<input id="notchQ" type="number" min="1" max="100" step="1" value="30"></label></div>
+        <div class="filter-control"><label><input id="harmonics" type="checkbox">고조파 포함</label></div>
         <span id="filterRate" class="muted">Fs —</span>
       </div>
+      <div class="orderbar"><label>적용 순서<select id="filterOrder"><option value="hp,lp,line">HPF → LPF → 전원 잡음</option><option value="hp,line,lp">HPF → 전원 잡음 → LPF</option><option value="line,hp,lp">전원 잡음 → HPF → LPF</option><option value="line,lp,hp">전원 잡음 → LPF → HPF</option><option value="lp,hp,line">LPF → HPF → 전원 잡음</option><option value="lp,line,hp">LPF → 전원 잡음 → HPF</option></select></label><span class="muted">IIR · 2차 / 단방향</span></div>
       <p id="filterStatus" role="status">Raw · 필터 미적용</p>
+      <div id="compareControls" class="compare-controls" hidden><label>비교 채널<select id="compareChannel"></select></label><span>Raw / Notch / Multitaper · 공통 배율</span><span id="lineStats" role="status"></span></div>
       <div class="toolbar">
         <label>구간<input id="window" type="number" value="10" min="0.05" step="1"><span>s</span></label>
         <label>표시 단위<select id="outputUnit"><option value="original">CSV 원본</option><option value="uv">µV</option></select></label>
@@ -62,6 +66,7 @@
         <input id="seek" type="range" min="0" max="0" step="0.001" value="0" aria-label="표시 구간 시작 시간" disabled>
         <div class="transport"><button id="prev" class="icon-button" title="이전 구간" aria-label="이전 구간" disabled><i data-lucide="chevron-left"></i></button><button id="play" class="icon-button" title="재생 / 일시정지" aria-label="재생 / 일시정지" disabled><i data-lucide="play"></i></button><button id="next" class="icon-button" title="다음 구간" aria-label="다음 구간" disabled><i data-lucide="chevron-right"></i></button><label>시작<input id="start" type="number" min="0" step="0.1" value="0"><span>s</span></label><span id="position">—</span></div>
       </section>
+      <section id="spectrumSection" class="spectrum-section" hidden><div class="plot-heading"><h2>전원 대역 PSD · 표시 구간</h2><span id="spectrumMeta"></span></div><div class="spectrum-legend"><span class="raw-key">Raw</span><span class="notch-key">Notch</span><span class="multi-key">Multitaper (PREP 참고)</span></div><canvas id="spectrum" aria-label="동일 구간의 Raw, Notch, Multitaper 전원 대역 PSD 비교"></canvas></section>
       <footer><span id="status" role="status">대기</span><span>raw EEG · 02</span></footer>
     </main>
   </div>

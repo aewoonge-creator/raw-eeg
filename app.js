@@ -10,26 +10,30 @@ function unitLabel() { if($('outputUnit').value==='uv')return 'µV';const unit=$
 function option(value,text) {const el=document.createElement('option');el.value=value;el.textContent=text;return el;}
 function filterSettings() {
   return {hpOn:$('hpOn').checked,hp:Number($('hpHz').value),lpOn:$('lpOn').checked,lp:Number($('lpHz').value),
-    notchOn:$('notchOn').checked,notch:$('notchHz').value==='both'?'both':Number($('notchHz').value),q:Number($('notchQ').value)};
+    notchOn:$('notchOn').checked,notch:$('notchHz').value==='both'?'both':Number($('notchHz').value),q:Number($('notchQ').value),
+    order:$('filterOrder').value.split(','),lineMethod:$('lineMethod').value,harmonics:$('harmonics').checked};
 }
 function filterDescription() {
-  const s=filterSettings(),parts=[];
-  if(s.hpOn)parts.push(`HPF ${s.hp} Hz`);
-  if(s.lpOn)parts.push(`LPF ${s.lp} Hz`);
-  if(s.notchOn)parts.push(`Notch ${s.notch==='both'?'50+60':s.notch} Hz (Q ${s.q})`);
-  return parts.length?parts.join(' · '):'필터 모두 OFF';
+  const s=filterSettings(),method=state.view==='compare'?'Notch / Multitaper':s.lineMethod==='notch'?`Notch (Q ${s.q})`:'Multitaper (PREP 참고)';
+  const stages={hp:s.hpOn?`HPF ${s.hp} Hz`:'',lp:s.lpOn?`LPF ${s.lp} Hz`:'',line:s.notchOn?`${method} ${s.notch==='both'?'50+60':s.notch} Hz${s.harmonics?' + 고조파':''}`:''};
+  return s.order.map(k=>stages[k]).filter(Boolean).join(' → ') || '필터 모두 OFF';
 }
 function updateViewStatus(error='') {
   $('rawView').setAttribute('aria-selected',state.view==='raw');$('filteredView').setAttribute('aria-selected',state.view==='filtered');
-  $('plotTitle').textContent=`${state.view==='raw'?'Raw':'Filtered'} ${state.mode==='bipolar'?'bipolar · A − B':'traces'}`;
+  $('compareView').setAttribute('aria-selected',state.view==='compare');
+  $('compareControls').hidden=$('spectrumSection').hidden=state.view!=='compare';
+  $('plotTitle').textContent=`${state.view==='compare'?'Raw / Notch / Multitaper':state.view==='raw'?'Raw':'Filtered'} ${state.mode==='bipolar'?'bipolar · A − B':'traces'}`;
   $('plot').setAttribute('aria-label',`${state.mode==='bipolar'?'Bipolar':'채널별'} EEG ${state.view==='raw'?'원본':'필터 적용'} 파형`);
-  $('filterStatus').textContent=state.view==='raw'?'Raw · 필터 미적용':error?`Filtered · 적용 실패: ${error}`:`Filtered · ${filterDescription()} · 2차 IIR / 단방향`;
-  $('filterStatus').classList.toggle('invalid',!!error && state.view==='filtered');
+  $('filterStatus').textContent=state.view==='raw'?'Raw · 필터 미적용':error?`적용 실패: ${error}`:`${state.view==='compare'?'비교':'Filtered'} · ${filterDescription()}`;
+  $('filterStatus').classList.toggle('invalid',!!error && state.view!=='raw');
   $('filterRate').textContent=state.axis?`Fs ${fmt(state.axis.filterRate)} Hz`:'Fs —';
   $('hpHz').disabled=!$('hpOn').checked;$('lpHz').disabled=!$('lpOn').checked;
-  $('notchHz').disabled=$('notchQ').disabled=!$('notchOn').checked;
+  $('notchOn').disabled=state.view==='compare';
+  $('notchHz').disabled=$('harmonics').disabled=!$('notchOn').checked;
+  $('lineMethod').disabled=!$('notchOn').checked || state.view==='compare';
+  $('notchQ').disabled=!$('notchOn').checked || (state.view!=='compare' && $('lineMethod').value!=='notch');
 }
-function setView(view) {stop();state.view=view;$('cursor').hidden=true;rebuild();}
+function setView(view) {stop();state.view=view;if(view==='compare')$('notchOn').checked=true;$('cursor').hidden=true;rebuild();}
 function setMode(mode) {
   state.mode=mode; $('rawTab').setAttribute('aria-selected',mode==='raw');$('bipolarTab').setAttribute('aria-selected',mode==='bipolar');
   $('montageSection').hidden=mode!=='bipolar';
@@ -67,17 +71,26 @@ function renderPairs() {
 function rebuild() {
   $('cursor').hidden=true;
   updateViewStatus();
-  if(!state.data || !state.axis){draw();return;}
+  if(!state.data || !state.axis){draw();drawSpectrum();return;}
   const configs=state.mode==='raw' ? [...state.selected].map(a=>({a,b:null})) : state.pairs;
+  const previous=$('compareChannel').value;
+  $('compareChannel').replaceChildren(...configs.map((pair,i)=>option(i,pair.b==null?label(pair.a):`${label(pair.a)} − ${label(pair.b)}`)));
+  if([...$('compareChannel').options].some(o=>o.value===previous))$('compareChannel').value=previous;
+  $('compareChannel').disabled=!configs.length;
+  const chosen=configs[Number($('compareChannel').value)];
+  const jobs=state.view==='compare'?(chosen?['raw','notch','multitaper'].map(method=>({...chosen,method})):[]):configs;
   const warnings=[], settings=filterSettings();let filterError='';
-  state.traces=configs.map(pair=>{
-    const name=pair.b==null?label(pair.a):`${label(pair.a)} − ${label(pair.b)}`;
+  const lineStats=[];
+  state.traces=jobs.map(pair=>{
+    const name=state.view==='compare'?{raw:'Raw',notch:'Notch',multitaper:'Multitaper'}[pair.method]:pair.b==null?label(pair.a):`${label(pair.a)} − ${label(pair.b)}`;
     try {let result=RawEEG.signal(state.data,pair.a,pair.b,{inputUnit:$('inputUnit').value,outputUnit:$('outputUnit').value});
-      if(state.view==='filtered') {
+      if(state.view==='filtered' || (state.view==='compare' && pair.method!=='raw')) {
         try {
-          const key=JSON.stringify([pair.a,pair.b,$('inputUnit').value,$('outputUnit').value,settings]);
+          const active=state.view==='compare'?{...settings,lineMethod:pair.method}:settings;
+          const key=JSON.stringify([pair.a,pair.b,$('inputUnit').value,$('outputUnit').value,active]);
           let filtered=state.filterCache.get(key);
-          if(!filtered){filtered=EEGFilters.apply(result.values,state.axis,settings);if(state.filterCache.size>=16)state.filterCache.clear();state.filterCache.set(key,filtered);}
+          if(!filtered){filtered=EEGFilters.apply(result.values,state.axis,active);if(state.filterCache.size>=16)state.filterCache.clear();state.filterCache.set(key,filtered);}
+          if(filtered.lineStats){lineStats.push(filtered.lineStats);if(filtered.lineStats.skipped)warnings.push(`${name}: Multitaper 창보다 짧은 연속 구간 ${filtered.lineStats.skipped.toLocaleString()}샘플은 전원 잡음 제거 미처리`);}
           result=RawEEG.summarize(filtered.values);
         } catch(e) {filterError=e.message;throw e;}
       }
@@ -85,15 +98,20 @@ function rebuild() {
       return {...result,name,pair};
     }catch(e){warnings.push(e.message);return {name,pair,error:e.message};}
   });
+  if(state.view==='compare' && settings.lpOn && settings.lp<=(settings.notch==='both'?50:settings.notch))warnings.push('LPF가 전원 주파수보다 낮아 두 방식의 차이가 작아질 수 있습니다.');
+  const ls=lineStats[0];
+  const summary=ls?`PREP 참고 구현 · 창 ${fmt(ls.windowSeconds)} s / BW ${fmt(ls.bandwidth)} Hz · 검출 ${lineStats.reduce((a,s)=>a+s.detected,0)}건 / ${lineStats.reduce((a,s)=>a+s.windows,0)}창 · 미처리 ${lineStats.reduce((a,s)=>a+s.skipped,0).toLocaleString()}샘플 (전체 기록)` : '';
+  $('lineStats').textContent=summary;
   if(state.data.invalid)warnings.push(`빈 값/비수치 ${state.data.invalid.toLocaleString()}개: 파형 단절로 표시`);
   if(state.axis.gaps)warnings.push(`시간 간격 불연속 ${state.axis.gaps.toLocaleString()}개`);
   if(Number($('timeColumn').value)<0 && !state.data.rateDeclared && !state.rateConfirmed)warnings.push('시간 메타데이터 없음: 250 Hz 임시값. CSV / 시간 설정에서 실제 Hz를 확인하고 적용하세요.');
   if(state.mode==='bipolar' && ($('inputUnit').value==='counts' || ($('inputUnit').value==='auto' && state.data.unit==='counts')) && state.pairs.some(p=>!Number.isFinite(state.data.channels[p.a].gain)||!Number.isFinite(state.data.channels[p.b].gain)))warnings.push('Bipolar: Gain 메타데이터 미확인. 두 입력의 Gain/단위가 같아야 합니다.');
   notice([...new Set(warnings)].join(' · '));
   updateViewStatus(filterError);
-  $('viewCount').textContent=`${state.traces.length} / 8 traces`;$('export').disabled=!state.traces.some(t=>!t.error);
-  $('unitLabel').textContent=unitLabel();$('baselineLabel').textContent=`표시 기준선: ${$('baseline').value==='center'?'채널 중앙':'0'} · ${state.view==='raw'?'원본 값':'필터 적용 값'}`;
-  draw();drawOverview();
+  if(state.view==='filtered' && summary)$('filterStatus').textContent+=` · ${summary}`;
+  $('viewCount').textContent=state.view==='compare'?`${state.traces.length} methods`:`${state.traces.length} / 8 traces`;$('export').disabled=!state.traces.some(t=>!t.error);
+  $('unitLabel').textContent=unitLabel();$('baselineLabel').textContent=`표시 기준선: ${$('baseline').value==='center'?'채널 중앙':'0'} · ${state.view==='raw'?'원본 값':state.view==='compare'?'원본 / 필터 비교':'필터 적용 값'}`;
+  draw();drawOverview();drawSpectrum();
 }
 function applyTime() {
   if(!state.data)return;
@@ -104,7 +122,7 @@ function applyTime() {
     $('duration').textContent=clock(axis.duration);$('timeSource').textContent=axis.source;$('totalTime').textContent=clock(axis.duration);
     for(const id of ['seek','prev','next','play'])$(id).disabled=false;
     rebuild();
-  }catch(e){stop();state.axis=null;state.traces=[];for(const id of ['seek','prev','next','play','export'])$(id).disabled=true;notice(e.message);draw();drawOverview();}
+  }catch(e){stop();state.axis=null;state.traces=[];for(const id of ['seek','prev','next','play','export'])$(id).disabled=true;notice(e.message);draw();drawOverview();drawSpectrum();}
 }
 async function openFile(file) {
   if(!file)return;
@@ -153,12 +171,14 @@ function draw() {
       c.font='9px "Segoe UI",sans-serif';c.fillStyle='#788672';
       if(tr.error){c.fillStyle='#a56a2b';c.fillText(ellipsis(c,tr.error,pw-10),g.left+7,cy);return;}
       const center=$('baseline').value==='zero'?0:tr.center;
-      const scale=$('scale').value==='auto' ? ($('baseline').value==='zero'?Math.max(Math.abs(tr.min),Math.abs(tr.max))*2:tr.span)*1.35/4 : Number($('scale').value);
+      const amplitude=t=>$('baseline').value==='zero'?Math.max(Math.abs(t.min),Math.abs(t.max))*2:t.span;
+      const autoRange=state.view==='compare'?Math.max(...state.traces.filter(t=>!t.error).map(amplitude)):amplitude(tr);
+      const scale=$('scale').value==='auto' ? autoRange*1.35/4 : Number($('scale').value);
       const perDiv=Math.max(scale,1e-9),y=v=>cy-(v-center)/perDiv*(g.lane/5);
       c.fillText(ellipsis(c,`기준 ${fmt(center)}`,g.left-13),8,cy+(names.length>1?28:10));
       for(let d=-2;d<=2;d++){const yy=cy+d*g.lane/5;c.strokeStyle=d===0?'#bed4b7':'#e2ebde';c.lineWidth=d===0?.8:.5;c.beginPath();c.moveTo(g.left,yy);c.lineTo(w-g.right,yy);c.stroke();}
-      c.save();c.beginPath();c.rect(g.left,top,pw,g.lane);c.clip();c.lineWidth=.9;c.strokeStyle=state.view==='filtered'?'#8b4f24':state.mode==='raw'?'#263e32':'#254d65';
-      tracePath(c,tr.values,times,from,to,x,y,state.view==='filtered'?1.5/state.axis.filterRate:state.axis.median*2.5,pw);c.restore();
+      c.save();c.beginPath();c.rect(g.left,top,pw,g.lane);c.clip();c.lineWidth=.9;c.strokeStyle=state.view==='compare'?['#263e32','#a25c27','#236caa'][i]:state.view==='filtered'?'#8b4f24':state.mode==='raw'?'#263e32':'#254d65';
+      tracePath(c,tr.values,times,from,to,x,y,state.view!=='raw'?1.5/state.axis.filterRate:state.axis.median*2.5,pw);c.restore();
       c.fillStyle='#6c8066';c.textAlign='right';c.font='9px "Segoe UI",sans-serif';c.fillText(fmt(perDiv),w-5,cy-3);c.fillText('/ div',w-5,cy+9);
     });
     const v=RawEEG.viewport(state.start,state.span,state.axis.duration);state.start=v.start;state.span=v.span;
@@ -175,7 +195,34 @@ function drawOverview() {
   c.strokeStyle='#94b4a2';c.lineWidth=1;
   tracePath(c,tr.values,state.axis.times,0,state.axis.times.length,t=>t/state.axis.duration*w,v=>h/2-(v-tr.center)/Math.max(tr.span,1e-9)*h*.8,state.view==='filtered'?1.5/state.axis.filterRate:state.axis.median*2.5,w);
 }
-function move(start,span=state.span) {if(!state.axis)return;Object.assign(state,RawEEG.viewport(start,span,state.axis.duration));$('cursor').hidden=true;draw();}
+function drawSpectrum(){
+  if(state.view!=='compare')return;
+  const {c,w,h}=canvasSize($('spectrum'));c.clearRect(0,0,w,h);$('spectrumMeta').textContent='';
+  if(!state.axis || state.traces.length!==3)return;
+  const times=state.axis.times,fs=state.axis.filterRate,from=RawEEG.lowerBound(times,state.start),to=RawEEG.lowerBound(times,state.start+state.span);
+  const curves=state.traces.map(t=>t.error?null:EEGSpectrum.welch(t.values,times,fs,from,to));
+  const valid=curves.filter(Boolean);
+  if(!valid.length){c.fillStyle='#66777a';c.font='12px sans-serif';c.fillText('유효한 연속 구간 부족',20,40);return;}
+  const targets=filterSettings().notch;
+  const low=(targets==='both'?50:targets)-5,high=Math.min(fs/2,(targets==='both'?60:targets)+5);
+  if(high<=low)return;
+  let min=Infinity,max=-Infinity;
+  for(const spec of valid)for(let k=Math.ceil(low/spec.df);k<=Math.min(spec.power.length-1,Math.floor(high/spec.df));k++){
+    const db=10*Math.log10(Math.max(spec.power[k],1e-20));min=Math.min(min,db);max=Math.max(max,db);
+  }
+  if(!Number.isFinite(min))return;max=Math.max(max,min+1);max+=3;min-=3;
+  const l=58,r=12,t=28,b=32,pw=w-l-r,ph=h-t-b,x=f=>l+(f-low)/(high-low)*pw,y=v=>t+(max-v)/(max-min)*ph;
+  c.font='10px sans-serif';c.lineWidth=1;
+  for(let i=0;i<=4;i++){
+    const value=min+(max-min)*i/4,yy=y(value);c.strokeStyle='#e2e8e6';c.beginPath();c.moveTo(l,yy);c.lineTo(w-r,yy);c.stroke();c.textAlign='right';c.fillStyle='#66777a';c.fillText(fmt(value),l-6,yy+3);
+    const f=low+(high-low)*i/4;c.textAlign=i===0?'left':i===4?'right':'center';c.fillText(`${fmt(f)} Hz`,x(f),h-12);
+  }
+  c.textAlign='left';c.fillText(`dB re 1 (${unitLabel()})²/Hz`,l,14);
+  curves.forEach((spec,j)=>{if(!spec)return;c.save();c.beginPath();c.rect(l,t,pw,ph);c.clip();c.beginPath();c.strokeStyle=['#263e32','#a25c27','#236caa'][j];c.lineWidth=1.4;
+    let first=true;for(let k=Math.max(0,Math.floor(low/spec.df));k<=Math.min(spec.power.length-1,Math.ceil(high/spec.df));k++){const xx=x(k*spec.df),yy=y(10*Math.log10(Math.max(spec.power[k],1e-20)));if(first)c.moveTo(xx,yy);else c.lineTo(xx,yy);first=false;}c.stroke();c.restore();});
+  const spec=valid[0];$('spectrumMeta').textContent=`Hann · ${spec.count}창 · Δf ${fmt(spec.df)} Hz`;
+}
+function move(start,span=state.span) {if(!state.axis)return;Object.assign(state,RawEEG.viewport(start,span,state.axis.duration));$('cursor').hidden=true;draw();drawSpectrum();}
 function stop(){if(!state.playing)return;state.playing=false;$('play').innerHTML='<i data-lucide="play"></i>';icons();}
 function play(){if(!state.axis)return;if(state.playing){stop();return;}if(state.start>=state.axis.duration-state.span)move(0);state.playing=true;$('play').innerHTML='<i data-lucide="pause"></i>';icons();let last=performance.now();function frame(now){if(!state.playing)return;move(state.start+(now-last)/1000);last=now;if(state.start>=state.axis.duration-state.span){stop();return;}requestAnimationFrame(frame);}requestAnimationFrame(frame);}
 function demo() {
@@ -186,7 +233,7 @@ function demo() {
     const t=i/250;
     rows.push([i*4000,...names.map((_,ch)=>{
       const burst=Math.exp(-(((t-26-ch*.15)/.6)**2))*70;
-      return (20*Math.sin(2*Math.PI*(8+ch*.45)*t+ch*.7)+8*Math.sin(2*Math.PI*1.2*t)+3*Math.cos(2*Math.PI*31*t+ch)+burst).toFixed(4);
+      return (20*Math.sin(2*Math.PI*(8+ch*.45)*t+ch*.7)+8*Math.sin(2*Math.PI*1.2*t)+3*Math.cos(2*Math.PI*31*t+ch)+12*Math.sin(2*Math.PI*60.2*t+ch*.3)+burst).toFixed(4);
     })].join(','));
   }
   openFile(new File([rows.join('\n')],'DEMO_synthetic_90s.csv',{type:'text/csv'}));
@@ -194,7 +241,8 @@ function demo() {
 $('open').onclick=$('emptyOpen').onclick=()=>$('file').click();$('file').onchange=e=>openFile(e.target.files[0]);$('demo').onclick=demo;
 $('rawTab').onclick=()=>setMode('raw');$('bipolarTab').onclick=()=>setMode('bipolar');
 $('rawView').onclick=()=>setView('raw');$('filteredView').onclick=()=>setView('filtered');
-for(const id of ['hpOn','hpHz','lpOn','lpHz','notchOn','notchHz','notchQ'])$(id).onchange=()=>{stop();state.filterCache.clear();rebuild();};
+$('compareView').onclick=()=>setView('compare');$('compareChannel').onchange=rebuild;
+for(const id of ['hpOn','hpHz','lpOn','lpHz','notchOn','notchHz','notchQ','lineMethod','harmonics','filterOrder'])$(id).onchange=()=>{stop();state.filterCache.clear();rebuild();};
 $('addPair').onclick=()=>{if(!state.data||state.pairs.length>=8||state.data.channels.length<2)return;state.pairs.push({a:0,b:1});renderPairs();rebuild();};
 $('applyTime').onclick=()=>{state.rateConfirmed=true;applyTime();};
 for(const id of ['outputUnit','scale','baseline','inputUnit'])$(id).onchange=rebuild;
@@ -222,9 +270,10 @@ $('export').onclick=()=>{
   c.fillText(`raw EEG | ${state.view.toUpperCase()} | ${state.mode} | ${$('filename').textContent}`,14,25,out.width-28);c.font='13px sans-serif';
   c.fillText(`${$('interval').textContent} | ${unitLabel()} | ${$('baselineLabel').textContent}`,14,51,out.width-28);
   c.fillText(`${$('filterStatus').textContent} | Fs ${fmt(state.axis.filterRate)} Hz`,14,77,out.width-28);c.drawImage(source,0,108);
+  if(state.view==='compare')c.fillText(`${$('compareChannel').selectedOptions[0]?.textContent || ''} | Q ${$('notchQ').value} | ${$('lineStats').textContent}`,14,97,out.width-28);
   out.toBlob(blob=>{if(!blob)return;const url=URL.createObjectURL(blob),a=document.createElement('a');a.href=url;
     a.download=`raw-EEG-${state.mode}-${state.view}-${state.start.toFixed(2)}s.png`;a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);});
 };
 let dragDepth=0;document.addEventListener('dragenter',e=>{if(e.dataTransfer.types.includes('Files')){e.preventDefault();dragDepth++;document.body.classList.add('dragging');}});document.addEventListener('dragleave',()=>{if(--dragDepth<=0)document.body.classList.remove('dragging');});document.addEventListener('dragover',e=>e.preventDefault());document.addEventListener('drop',e=>{e.preventDefault();dragDepth=0;document.body.classList.remove('dragging');openFile(e.dataTransfer.files[0]);});
-new ResizeObserver(()=>{draw();drawOverview();}).observe($('plotWrap'));
+new ResizeObserver(()=>{draw();drawOverview();drawSpectrum();}).observe($('plotWrap'));
 icons();draw();drawOverview();
