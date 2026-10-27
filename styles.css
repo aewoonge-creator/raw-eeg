@@ -12,3 +12,4 @@ main{min-width:0;padding:20px 24px 12px}.viewbar{display:flex;align-items:center
 @media(max-width:480px){#pairs{grid-template-columns:minmax(0,1fr)}.pair select{font-size:12px;padding-left:8px}}
 @media(max-width:480px){.viewbar{gap:6px}.viewbar .tabs button{min-width:57px;padding:8px}.viewbar .processing{padding-left:4px}.viewbar .icon-button{margin-left:auto}}
 .plot-heading{flex-wrap:wrap}.plot-heading h2{overflow-wrap:anywhere}.orderbar select{min-width:0}
+@media(max-width:360px){.topbar{padding:0 10px;gap:8px}.brand{gap:6px}.brand>svg{width:20px;height:20px}.brand h1{font-size:18px;white-space:nowrap}.file-actions button{padding:6px 7px;gap:5px;white-space:nowrap}}
