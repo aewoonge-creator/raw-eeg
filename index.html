@@ -2,10 +2,10 @@
 <html lang="ko">
 <head>
   <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>raw EEG</title><link rel="stylesheet" href="styles.css?v=line-noise-v1">
+  <title>raw EEG</title><link rel="stylesheet" href="styles.css?v=sample-order-v1">
   <script defer src="vendor/papaparse.min.js"></script><script defer src="vendor/lucide.min.js"></script>
-  <script defer src="vendor/fili.min.js"></script><script defer src="vendor/dpss.js"></script><script defer src="line-noise.js?v=line-noise-v1"></script><script defer src="filters.js?v=line-noise-v1"></script><script defer src="spectrum.js?v=line-noise-v1"></script>
-  <script defer src="core.js?v=line-noise-v1"></script><script defer src="app.js?v=line-noise-v1"></script>
+  <script defer src="vendor/fili.min.js"></script><script defer src="vendor/dpss.js"></script><script defer src="line-noise.js?v=line-noise-v1"></script><script defer src="filters.js?v=sample-order-v1"></script><script defer src="spectrum.js?v=sample-order-v1"></script>
+  <script defer src="core.js?v=line-noise-v1"></script><script defer src="app.js?v=sample-order-v1"></script>
 </head>
 <body>
   <header class="topbar">
@@ -47,6 +47,7 @@
       </div>
       <div class="orderbar"><label>적용 순서<select id="filterOrder"><option value="hp,lp,line">HPF → LPF → 전원 잡음</option><option value="hp,line,lp">HPF → 전원 잡음 → LPF</option><option value="line,hp,lp">전원 잡음 → HPF → LPF</option><option value="line,lp,hp">전원 잡음 → LPF → HPF</option><option value="lp,hp,line">LPF → HPF → 전원 잡음</option><option value="lp,line,hp">LPF → 전원 잡음 → HPF</option></select></label><span class="muted">IIR · 2차 / 단방향</span></div>
       <p id="filterStatus" role="status">Raw · 필터 미적용</p>
+      <div class="orderbar"><label>계산 기준<select id="filterTiming"><option value="samples">샘플 순서 / 설정 Hz · 보간 없음</option><option value="strict">CSV 시간 간격 · 엄격 검사</option></select></label><span id="timingStatus" role="status" class="muted"></span></div>
       <div id="compareControls" class="compare-controls" hidden><label>비교 채널<select id="compareChannel"></select></label><span>Raw / Notch / Multitaper · 공통 배율</span><span id="lineStats" role="status"></span></div>
       <div class="toolbar">
         <label>구간<input id="window" type="number" value="10" min="0.05" step="1"><span>s</span></label>

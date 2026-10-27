@@ -11,7 +11,7 @@ function option(value,text) {const el=document.createElement('option');el.value=
 function filterSettings() {
   return {hpOn:$('hpOn').checked,hp:Number($('hpHz').value),lpOn:$('lpOn').checked,lp:Number($('lpHz').value),
     notchOn:$('notchOn').checked,notch:$('notchHz').value==='both'?'both':Number($('notchHz').value),q:Number($('notchQ').value),
-    order:$('filterOrder').value.split(','),lineMethod:$('lineMethod').value,harmonics:$('harmonics').checked};
+    order:$('filterOrder').value.split(','),lineMethod:$('lineMethod').value,harmonics:$('harmonics').checked,timing:$('filterTiming').value};
 }
 function filterDescription() {
   const s=filterSettings(),method=state.view==='compare'?'Notch / Multitaper':s.lineMethod==='notch'?`Notch (Q ${s.q})`:'Multitaper (PREP 참고)';
@@ -27,6 +27,7 @@ function updateViewStatus(error='') {
   $('filterStatus').textContent=state.view==='raw'?'Raw · 필터 미적용':error?`적용 실패: ${error}`:`${state.view==='compare'?'비교':'Filtered'} · ${filterDescription()}`;
   $('filterStatus').classList.toggle('invalid',!!error && state.view!=='raw');
   $('filterRate').textContent=state.axis?`Fs ${fmt(state.axis.filterRate)} Hz`:'Fs —';
+  $('timingStatus').textContent=state.axis?`${$('filterTiming').value==='samples'?`${fmt(state.axis.filterRate)} Hz 등간격 가정`:'시간 간격 검증'} · 보간 없음 · 시간좌표: CSV 원본`:'';
   $('hpHz').disabled=!$('hpOn').checked;$('lpHz').disabled=!$('lpOn').checked;
   $('notchOn').disabled=state.view==='compare';
   $('notchHz').disabled=$('harmonics').disabled=!$('notchOn').checked;
@@ -80,6 +81,14 @@ function rebuild() {
   const chosen=configs[Number($('compareChannel').value)];
   const jobs=state.view==='compare'?(chosen?['raw','notch','multitaper'].map(method=>({...chosen,method})):[]):configs;
   const warnings=[], settings=filterSettings();let filterError='';
+  if(state.view!=='raw' && settings.timing==='samples'){
+    const report=EEGFilters.timing(state.axis);
+    if(report.jitter || report.gaps)warnings.push(`샘플 순서 기반 필터: ${fmt(report.fs)} Hz 등간격 가정. 시간 간격 편차 ${report.jitter}개 / 1.5주기 초과 ${report.gaps}개. 원본 시간·샘플 유지, 보간 없음. 실제 누락 여부는 확인되지 않습니다.`);
+  }
+  const used=new Set(jobs.flatMap(p=>p.b==null?[p.a]:[p.a,p.b]));
+  if(($('inputUnit').value==='auto'?state.data.unit:$('inputUnit').value)==='counts')for(const i of used){
+    if(state.data.railLocked?.[i])warnings.push(`${state.data.channels[i].key}: ADC 한계값에 고정된 원본 · 필터로 복구되지 않음`);
+  }
   const lineStats=[];
   state.traces=jobs.map(pair=>{
     const name=state.view==='compare'?{raw:'Raw',notch:'Notch',multitaper:'Multitaper'}[pair.method]:pair.b==null?label(pair.a):`${label(pair.a)} − ${label(pair.b)}`;
@@ -104,7 +113,7 @@ function rebuild() {
   $('lineStats').textContent=summary;
   if(state.data.invalid)warnings.push(`빈 값/비수치 ${state.data.invalid.toLocaleString()}개: 파형 단절로 표시`);
   if(state.axis.gaps)warnings.push(`시간 간격 불연속 ${state.axis.gaps.toLocaleString()}개`);
-  if(Number($('timeColumn').value)<0 && !state.data.rateDeclared && !state.rateConfirmed)warnings.push('시간 메타데이터 없음: 250 Hz 임시값. CSV / 시간 설정에서 실제 Hz를 확인하고 적용하세요.');
+  if((Number($('timeColumn').value)<0 || settings.timing==='samples') && !state.data.rateDeclared && !state.rateConfirmed)warnings.push('샘플링 주파수 메타데이터 없음: 250 Hz 임시값. CSV / 시간 설정에서 실제 Hz를 확인하고 적용하세요.');
   if(state.mode==='bipolar' && ($('inputUnit').value==='counts' || ($('inputUnit').value==='auto' && state.data.unit==='counts')) && state.pairs.some(p=>!Number.isFinite(state.data.channels[p.a].gain)||!Number.isFinite(state.data.channels[p.b].gain)))warnings.push('Bipolar: Gain 메타데이터 미확인. 두 입력의 Gain/단위가 같아야 합니다.');
   notice([...new Set(warnings)].join(' · '));
   updateViewStatus(filterError);
@@ -116,7 +125,7 @@ function rebuild() {
 function applyTime() {
   if(!state.data)return;
   try {const axis=RawEEG.timeAxis(state.data,{rate:Number($('rate').value),column:Number($('timeColumn').value),unit:$('timeUnit').value});
-    axis.filterRate=state.data.rateDeclared || state.rateConfirmed || Number($('timeColumn').value)<0?Number($('rate').value):1/axis.median;
+    axis.filterRate=$('filterTiming').value==='samples' || state.data.rateDeclared || state.rateConfirmed || Number($('timeColumn').value)<0?Number($('rate').value):1/axis.median;
     state.filterCache.clear();state.axis=axis;
     const view=RawEEG.viewport(state.start,state.span,axis.duration);Object.assign(state,view);
     $('duration').textContent=clock(axis.duration);$('timeSource').textContent=axis.source;$('totalTime').textContent=clock(axis.duration);
@@ -129,7 +138,7 @@ async function openFile(file) {
   stop();const id=++state.loadId;$('status').textContent='CSV 읽는 중…';
   try {if(file.size>80*1024*1024)throw new Error('최대 파일 크기는 80 MB입니다.');
     const text=await file.text();await new Promise(r=>setTimeout(r,0));if(id!==state.loadId)return;
-    const data=RawEEG.parse(text);state.data=data;state.axis=null;state.view='raw';state.filterCache.clear();state.start=0;state.span=10;state.rateConfirmed=false;state.labels=data.channels.map(ch=>ch.label);
+    const data=RawEEG.parse(text);data.railLocked=data.channels.map(ch=>ch.values.every(v=>v===8388607)||ch.values.every(v=>v===-8388608));state.data=data;state.axis=null;state.view='raw';state.filterCache.clear();state.start=0;state.span=10;state.rateConfirmed=false;state.labels=data.channels.map(ch=>ch.label);
     state.selected=new Set(data.channels.slice(0,8).map((_,i)=>i));state.pairs=Array.from({length:Math.min(8,data.channels.length-1)},(_,i)=>({a:i,b:i+1}));
     $('filename').textContent=file.name;$('samples').textContent=`${data.count.toLocaleString()} / ${data.channels.length}`;
     $('rate').value=data.rate;$('timeUnit').value='auto';$('inputUnit').value='auto';$('outputUnit').value='original';
@@ -200,7 +209,7 @@ function drawSpectrum(){
   const {c,w,h}=canvasSize($('spectrum'));c.clearRect(0,0,w,h);$('spectrumMeta').textContent='';
   if(!state.axis || state.traces.length!==3)return;
   const times=state.axis.times,fs=state.axis.filterRate,from=RawEEG.lowerBound(times,state.start),to=RawEEG.lowerBound(times,state.start+state.span);
-  const curves=state.traces.map(t=>t.error?null:EEGSpectrum.welch(t.values,times,fs,from,to));
+  const curves=state.traces.map(t=>t.error?null:EEGSpectrum.welch(t.values,times,fs,from,to,$('filterTiming').value));
   const valid=curves.filter(Boolean);
   if(!valid.length){c.fillStyle='#66777a';c.font='12px sans-serif';c.fillText('유효한 연속 구간 부족',20,40);return;}
   const targets=filterSettings().notch;
@@ -220,7 +229,7 @@ function drawSpectrum(){
   c.textAlign='left';c.fillText(`dB re 1 (${unitLabel()})²/Hz`,l,14);
   curves.forEach((spec,j)=>{if(!spec)return;c.save();c.beginPath();c.rect(l,t,pw,ph);c.clip();c.beginPath();c.strokeStyle=['#263e32','#a25c27','#236caa'][j];c.lineWidth=1.4;
     let first=true;for(let k=Math.max(0,Math.floor(low/spec.df));k<=Math.min(spec.power.length-1,Math.ceil(high/spec.df));k++){const xx=x(k*spec.df),yy=y(10*Math.log10(Math.max(spec.power[k],1e-20)));if(first)c.moveTo(xx,yy);else c.lineTo(xx,yy);first=false;}c.stroke();c.restore();});
-  const spec=valid[0];$('spectrumMeta').textContent=`Hann · ${spec.count}창 · Δf ${fmt(spec.df)} Hz`;
+  const spec=valid[0];$('spectrumMeta').textContent=`Hann · ${spec.count}창 · Δf ${fmt(spec.df)} Hz${$('filterTiming').value==='samples'?' · 설정 Hz 가정':''}`;
 }
 function move(start,span=state.span) {if(!state.axis)return;Object.assign(state,RawEEG.viewport(start,span,state.axis.duration));$('cursor').hidden=true;draw();drawSpectrum();}
 function stop(){if(!state.playing)return;state.playing=false;$('play').innerHTML='<i data-lucide="play"></i>';icons();}
@@ -242,6 +251,7 @@ $('open').onclick=$('emptyOpen').onclick=()=>$('file').click();$('file').onchang
 $('rawTab').onclick=()=>setMode('raw');$('bipolarTab').onclick=()=>setMode('bipolar');
 $('rawView').onclick=()=>setView('raw');$('filteredView').onclick=()=>setView('filtered');
 $('compareView').onclick=()=>setView('compare');$('compareChannel').onchange=rebuild;
+$('filterTiming').onchange=()=>{stop();state.filterCache.clear();if(state.data)applyTime();else updateViewStatus();};
 for(const id of ['hpOn','hpHz','lpOn','lpHz','notchOn','notchHz','notchQ','lineMethod','harmonics','filterOrder'])$(id).onchange=()=>{stop();state.filterCache.clear();rebuild();};
 $('addPair').onclick=()=>{if(!state.data||state.pairs.length>=8||state.data.channels.length<2)return;state.pairs.push({a:0,b:1});renderPairs();rebuild();};
 $('applyTime').onclick=()=>{state.rateConfirmed=true;applyTime();};
@@ -265,12 +275,13 @@ $('plot').addEventListener('pointermove',e=>{if(!state.axis||!state.traces.lengt
   $('cursor').textContent=`${clock(state.axis.times[index])} · ${tr.name}\n${tr.error || fmt(tr.values[index])+' '+unitLabel()}`;$('cursor').hidden=false;
 });$('plot').addEventListener('pointerleave',()=>{$('cursor').hidden=true;});
 $('export').onclick=()=>{
-  const source=$('plot'),out=document.createElement('canvas');out.width=source.width;out.height=source.height+124;
+  const source=$('plot'),out=document.createElement('canvas');out.width=source.width;out.height=source.height+148;
   const c=out.getContext('2d');c.fillStyle='#fff';c.fillRect(0,0,out.width,out.height);c.fillStyle='#243a2d';c.font='16px sans-serif';
   c.fillText(`raw EEG | ${state.view.toUpperCase()} | ${state.mode} | ${$('filename').textContent}`,14,25,out.width-28);c.font='13px sans-serif';
   c.fillText(`${$('interval').textContent} | ${unitLabel()} | ${$('baselineLabel').textContent}`,14,51,out.width-28);
-  c.fillText(`${$('filterStatus').textContent} | Fs ${fmt(state.axis.filterRate)} Hz`,14,77,out.width-28);c.drawImage(source,0,108);
+  c.fillText(`${$('filterStatus').textContent} | Fs ${fmt(state.axis.filterRate)} Hz`,14,77,out.width-28);c.drawImage(source,0,132);
   if(state.view==='compare')c.fillText(`${$('compareChannel').selectedOptions[0]?.textContent || ''} | Q ${$('notchQ').value} | ${$('lineStats').textContent}`,14,97,out.width-28);
+  c.fillText(state.view==='raw'?'Raw | 원본 시간·샘플 보존':$('timingStatus').textContent,14,119,out.width-28);
   out.toBlob(blob=>{if(!blob)return;const url=URL.createObjectURL(blob),a=document.createElement('a');a.href=url;
     a.download=`raw-EEG-${state.mode}-${state.view}-${state.start.toFixed(2)}s.png`;a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);});
 };

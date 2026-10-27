@@ -42,24 +42,33 @@
     }
     return order(settings).flatMap(stage=>stages[stage]);
   }
-  function apply(values, axis, settings) {
-    const fs = axis.filterRate || 1 / axis.median, coeffs = design(fs,settings);
-    if (!coeffs.length && !(settings.notchOn && settings.lineMethod==='multitaper')) return {values:Float64Array.from(values),fs,resets:0,jitter:0};
-    if (axis.times.length !== values.length) throw new Error('시간축과 신호 길이가 다릅니다.');
+  function timing(axis) {
+    const fs=axis.filterRate || 1/axis.median;
+    if(!(Number.isFinite(fs) && fs>0))throw new Error('필터 샘플링 주파수를 확인하세요.');
     const period = 1 / fs;
     let jitter = 0, checked = 0, gaps = 0;
     for (let i=1;i<axis.times.length;i++) {
       const dt = axis.times[i]-axis.times[i-1];
-      if (!(dt>0)) throw new Error('필터 시간축이 증가하지 않습니다.');
+      if (!(Number.isFinite(dt) && dt>0)) throw new Error('필터 시간축이 증가하지 않습니다.');
       if (dt > 1.5 * period) { gaps++; continue; }
       checked++;
       if (Math.abs(dt/period-1) > .2) jitter++;
     }
-    if (jitter > Math.max(2,checked*.01) || gaps > Math.max(2,(axis.times.length-1)*.1)) throw new Error('시간 간격과 필터 Hz가 맞지 않습니다. CSV / 시간 설정을 확인하세요. 불규칙 신호는 재보간하지 않습니다.');
+    return {fs,jitter,gaps,checked,irregular:jitter > Math.max(2,checked*.01) || gaps > Math.max(2,(axis.times.length-1)*.1)};
+  }
+  function apply(values, axis, settings) {
+    const fs = axis.filterRate || 1 / axis.median, coeffs = design(fs,settings);
+    const basis=settings.timing || 'strict';
+    if(!['strict','samples'].includes(basis))throw new Error('필터 시간 기준을 확인하세요.');
+    if (!coeffs.length && !(settings.notchOn && settings.lineMethod==='multitaper')) return {values:Float64Array.from(values),fs,resets:0,jitter:0};
+    if (axis.times.length !== values.length) throw new Error('시간축과 신호 길이가 다릅니다.');
+    const report=timing(axis),period=1/fs;
+    if (basis==='strict' && report.irregular) throw new Error('시간 간격과 필터 Hz가 맞지 않습니다. 엄격 검사 모드에서 중단했습니다. 샘플 순서 모드는 설정 Hz를 가정하며 보간하지 않습니다.');
     const ranges=[];let start=-1;
     for(let i=0;i<=values.length;i++){
       const valid=i<values.length && Number.isFinite(values[i]);
-      if(start>=0 && (!valid || (i>0 && axis.times[i]-axis.times[i-1]>1.5*period))){ranges.push([start,i]);start=-1;}
+      // Sample-order processing uses the existing rows only; never synthesize samples or rewrite timestamps.
+      if(start>=0 && (!valid || (basis==='strict' && i>0 && axis.times[i]-axis.times[i-1]>1.5*period))){ranges.push([start,i]);start=-1;}
       if(valid && start<0)start=i;
     }
     let output=Float64Array.from(values),lineStats=null;
@@ -80,7 +89,7 @@
       }
       output=next;
     }
-    return {values:output,fs,resets:ranges.length,jitter,lineStats};
+    return {values:output,...report,resets:ranges.length,lineStats,basis};
   }
-  return {design,apply,order,frequencies};
+  return {design,apply,order,frequencies,timing};
 });

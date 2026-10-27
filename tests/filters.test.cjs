@@ -55,3 +55,23 @@ test('grossly irregular or misconfigured timing cannot silently become filtered 
   const b=axis(100);b.filterRate=1000;
   assert.throws(()=>Filters.apply(tone(10,100),b,{...defaults,lpOn:true}),/시간 간격/);
 });
+test('explicit sample-order mode filters existing rows without interpolation or time rewriting',()=>{
+  const values=tone(10,2500),a=axis(values.length);
+  for(let i=1;i<a.times.length;i++)a.times[i]+=(i%2?.001:0)+(i>=1200?1:0);
+  values[600]=NaN;const source=values.slice(),times=a.times.slice();
+  for(const lineMethod of ['notch','multitaper']){
+    const s={...defaults,hpOn:true,lpOn:true,notchOn:true,lineMethod,timing:'samples'};
+    const result=Filters.apply(values,a,s),regular=Filters.apply(values,axis(values.length),s);
+    assert.deepEqual(result.values,regular.values);
+    assert.equal(result.values.length,values.length);assert.equal(result.resets,2);
+    assert.equal(result.irregular,true);assert.ok(result.gaps>0);
+    assert.deepEqual(values,source);assert.deepEqual(a.times,times);
+    assert.throws(()=>Filters.apply(values,a,{...s,timing:'strict'}),/시간 간격/);
+  }
+});
+test('sample-order mode still rejects invalid filter and time configurations',()=>{
+  const values=tone(10,100),a=axis(values.length),s={...defaults,lpOn:true,timing:'samples'};
+  assert.throws(()=>Filters.apply(values,a,{...s,lp:125}),/Nyquist/);
+  a.times[5]=a.times[4];assert.throws(()=>Filters.apply(values,a,s),/시간축/);
+  assert.throws(()=>Filters.apply(values,axis(values.length),{...s,timing:'invalid'}),/시간 기준/);
+});

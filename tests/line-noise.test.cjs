@@ -79,3 +79,10 @@ test('Welch one-sided density integrates to sine variance and rejects gaps',()=>
   const bad=new Float64Array(2048).fill(NaN);
   assert.equal(Spectrum.welch(bad,times,256,0,bad.length),null);
 });
+test('sample-order comparison PSD uses the same nominal sampling model without filling NaN',()=>{
+  const values=Float64Array.from({length:2048},(_,i)=>tone(60,i)),a=axis(values.length),b=axis(values.length);
+  for(let i=1;i<b.times.length;i++)b.times[i]+=(i%2?.002:0)+(i>=1000?2:0);
+  assert.deepEqual(Spectrum.welch(values,a.times,fs,0,values.length,'samples'),Spectrum.welch(values,b.times,fs,0,values.length,'samples'));
+  values.fill(NaN,0,1024);
+  const result=Spectrum.welch(values,b.times,fs,0,values.length,'samples');assert.equal(result.count,7);
+});

@@ -1,0 +1,51 @@
+// Optional local regression. The recording is never copied into the repository or uploaded.
+const assert=require('node:assert/strict');
+const fs=require('node:fs');
+const path=require('node:path');
+const {createHash}=require('node:crypto');
+const {pathToFileURL}=require('node:url');
+const {chromium}=require(process.env.PLAYWRIGHT_MODULE || 'playwright');
+const recording=process.env.RAW_EEG_RECORDING;
+if(!recording)throw new Error('Set RAW_EEG_RECORDING to a local CSV path.');
+const hash=()=>createHash('sha256').update(fs.readFileSync(recording)).digest('hex');
+(async()=>{
+  const before=hash(),browser=await chromium.launch({channel:'msedge',headless:true});
+  const page=await browser.newPage({viewport:{width:1440,height:1100}}),errors=[],writes=[];
+  page.on('pageerror',e=>errors.push(e.message));
+  page.on('request',r=>{if(r.method()!=='GET')writes.push(r.method()+' '+r.url());});
+  const out=path.resolve(__dirname,'../test-results');fs.mkdirSync(out,{recursive:true});
+  try{
+    await page.goto(process.env.RAW_EEG_URL || pathToFileURL(path.resolve(__dirname,'../index.html')).href);
+    await page.locator('#file').setInputFiles(recording);
+    await page.waitForFunction(()=>state.data && state.traces.length===8);
+    await page.evaluate(()=>{window.originalColumns=state.data.columns.map(c=>c.slice());window.originalTimes=state.axis.times.slice();});
+    assert.equal(await page.locator('#filterTiming').inputValue(),'samples');
+    await page.locator('#filterOrder').selectOption('line,hp,lp');
+    await page.locator('#notchQ').fill('60');await page.locator('#notchQ').dispatchEvent('change');
+    await page.locator('#filteredView').click();
+    assert.equal(await page.evaluate(()=>state.traces.every(t=>!t.error && t.values.length===state.data.count && t.values.every(Number.isFinite))),true);
+    assert.equal(await page.locator('#export').isDisabled(),false);
+    assert.match(await page.locator('#notice').textContent(),/보간 없음/);
+    assert.match(await page.locator('#notice').textContent(),/ch7: ADC 한계값/);
+    await page.screenshot({path:path.join(out,'recording-filtered.png'),fullPage:true});
+    await page.locator('#filterTiming').selectOption('strict');
+    assert.match(await page.locator('#filterStatus').textContent(),/적용 실패/);
+    await page.locator('#filterTiming').selectOption('samples');
+    assert.equal(await page.evaluate(()=>state.traces.every(t=>!t.error)),true);
+    await page.locator('#lineMethod').selectOption('multitaper');
+    assert.equal(await page.evaluate(()=>state.traces.every(t=>!t.error)),true);
+    await page.locator('#compareView').click();
+    assert.equal(await page.evaluate(()=>state.traces.length===3 && state.traces.every(t=>!t.error)),true);
+    assert.match(await page.locator('#spectrumMeta').textContent(),/설정 Hz 가정/);
+    await page.locator('#bipolarTab').click();
+    assert.equal(await page.evaluate(()=>state.traces.every(t=>!t.error)),true);
+    await page.setViewportSize({width:390,height:844});
+    assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),true);
+    await page.screenshot({path:path.join(out,'recording-compare-mobile.png'),fullPage:true});
+    await page.locator('#rawTab').click();await page.locator('#rawView').click();
+    assert.equal(await page.evaluate(()=>state.traces.every((t,j)=>t.values.every((v,i)=>Object.is(v,state.data.channels[j].values[i])))),true);
+    assert.equal(await page.evaluate(()=>state.data.columns.every((c,j)=>c.every((v,i)=>Object.is(v,originalColumns[j][i]))) && state.axis.times.every((v,i)=>v===originalTimes[i])),true);
+    assert.equal(hash(),before);assert.deepEqual(errors,[]);assert.deepEqual(writes,[]);
+    console.log(JSON.stringify({result:'PASS',sha256Before:before,sha256After:hash(),checks:'IIR and multitaper visible; strict reproduces failure; recovery; bipolar; PSD; Raw arrays and timestamps unchanged; file hash unchanged; no network writes; mobile layout',errors},null,2));
+  }finally{await browser.close();}
+})().catch(e=>{console.error(e);process.exitCode=1;});
