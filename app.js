@@ -1,6 +1,6 @@
 'use strict';
 const $ = id => document.getElementById(id);
-const state = {data:null,axis:null,mode:'raw',view:'raw',selected:new Set(),pairs:[],labels:[],traces:[],start:0,span:10,playing:false,drag:null,loadId:0,rateConfirmed:false,filterCache:new Map()};
+const state = {data:null,axis:null,mode:'raw',view:'raw',selected:new Set(),pairs:[],labels:[],traces:[],start:0,span:10,playing:false,drag:null,loadId:0,rateConfirmed:false,filterCache:new Map(),driftCache:new Map()};
 const fmt = n => Number.isFinite(n) ? new Intl.NumberFormat('en-US',{maximumFractionDigits:3}).format(n) : '—';
 function clock(seconds) { const ms=Math.round(Math.max(0,seconds)*1000); return `${String(Math.floor(ms/60000)).padStart(2,'0')}:${String(Math.floor(ms/1000)%60).padStart(2,'0')}.${String(ms%1000).padStart(3,'0')}`; }
 function icons() { if(window.lucide) lucide.createIcons(); }
@@ -20,11 +20,13 @@ function filterDescription() {
 }
 function updateViewStatus(error='') {
   $('rawView').setAttribute('aria-selected',state.view==='raw');$('filteredView').setAttribute('aria-selected',state.view==='filtered');
+  $('driftView').setAttribute('aria-selected',state.view==='drift');
+  $('driftControls').hidden=$('driftSection').hidden=state.view!=='drift';
   $('compareView').setAttribute('aria-selected',state.view==='compare');
   $('compareControls').hidden=$('spectrumSection').hidden=state.view!=='compare';
-  $('plotTitle').textContent=`${state.view==='compare'?'Raw / Notch / Multitaper':state.view==='raw'?'Raw':'Filtered'} ${state.mode==='bipolar'?'bipolar · A − B':'traces'}`;
-  $('plot').setAttribute('aria-label',`${state.mode==='bipolar'?'Bipolar':'채널별'} EEG ${state.view==='raw'?'원본':'필터 적용'} 파형`);
-  $('filterStatus').textContent=state.view==='raw'?'Raw · 필터 미적용':error?`적용 실패: ${error}`:`${state.view==='compare'?'비교':'Filtered'} · ${filterDescription()}`;
+  $('plotTitle').textContent=`${state.view==='compare'?'Raw / Notch / Multitaper':state.view==='raw'?'Raw':state.view==='drift'?'Raw + 느린 추세':'Filtered'} ${state.mode==='bipolar'?'bipolar · A − B':'traces'}`;
+  $('plot').setAttribute('aria-label',`${state.mode==='bipolar'?'Bipolar':'채널별'} EEG ${['raw','drift'].includes(state.view)?'원본':'필터 적용'} 파형`);
+  $('filterStatus').textContent=state.view==='drift'?`드리프트 · 원본 + ${$('driftWindow').value} s 이동평균 추세 · 필터 미적용`:state.view==='raw'?'Raw · 필터 미적용':error?`적용 실패: ${error}`:`${state.view==='compare'?'비교':'Filtered'} · ${filterDescription()}`;
   $('filterStatus').classList.toggle('invalid',!!error && state.view!=='raw');
   $('filterRate').textContent=state.axis?`Fs ${fmt(state.axis.filterRate)} Hz`:'Fs —';
   $('timingStatus').textContent=state.axis?`${$('filterTiming').value==='samples'?`${fmt(state.axis.filterRate)} Hz 등간격 가정`:'시간 간격 검증'} · 보간 없음 · 시간좌표: CSV 원본`:'';
@@ -81,7 +83,7 @@ function rebuild() {
   const chosen=configs[Number($('compareChannel').value)];
   const jobs=state.view==='compare'?(chosen?['raw','notch','multitaper'].map(method=>({...chosen,method})):[]):configs;
   const warnings=[], settings=filterSettings();let filterError='';
-  if(state.view!=='raw' && settings.timing==='samples'){
+  if(['filtered','compare'].includes(state.view) && settings.timing==='samples'){
     const report=EEGFilters.timing(state.axis);
     if(report.jitter || report.gaps)warnings.push(`샘플 순서 기반 필터: ${fmt(report.fs)} Hz 등간격 가정. 시간 간격 편차 ${report.jitter}개 / 1.5주기 초과 ${report.gaps}개. 원본 시간·샘플 유지, 보간 없음. 실제 누락 여부는 확인되지 않습니다.`);
   }
@@ -104,7 +106,13 @@ function rebuild() {
         } catch(e) {filterError=e.message;throw e;}
       }
       if(!result.valid)warnings.push(`${name}: 유효한 샘플이 없습니다.`);
-      return {...result,name,pair};
+      let trend;
+      if(state.view==='drift'){
+        const key=JSON.stringify([pair.a,pair.b,$('inputUnit').value,$('outputUnit').value,$('driftWindow').value]);
+        trend=state.driftCache.get(key);
+        if(!trend){trend=EEGDrift.trend(result.values,state.axis.times,Number($('driftWindow').value),state.axis.median*2.5);if(state.driftCache.size>=16)state.driftCache.clear();state.driftCache.set(key,trend);}
+      }
+      return {...result,name,pair,trend};
     }catch(e){warnings.push(e.message);return {name,pair,error:e.message};}
   });
   if(state.view==='compare' && settings.lpOn && settings.lp<=(settings.notch==='both'?50:settings.notch))warnings.push('LPF가 전원 주파수보다 낮아 두 방식의 차이가 작아질 수 있습니다.');
@@ -119,14 +127,14 @@ function rebuild() {
   updateViewStatus(filterError);
   if(state.view==='filtered' && summary)$('filterStatus').textContent+=` · ${summary}`;
   $('viewCount').textContent=state.view==='compare'?`${state.traces.length} methods`:`${state.traces.length} / 8 traces`;$('export').disabled=!state.traces.some(t=>!t.error);
-  $('unitLabel').textContent=unitLabel();$('baselineLabel').textContent=`표시 기준선: ${$('baseline').value==='center'?'채널 중앙':'0'} · ${state.view==='raw'?'원본 값':state.view==='compare'?'원본 / 필터 비교':'필터 적용 값'}`;
+  $('unitLabel').textContent=unitLabel();$('baselineLabel').textContent=`표시 기준선: ${$('baseline').selectedOptions[0].textContent} · ${['raw','drift'].includes(state.view)?'원본 값':state.view==='compare'?'원본 / 필터 비교':'필터 적용 값'}`;
   draw();drawOverview();drawSpectrum();
 }
 function applyTime() {
   if(!state.data)return;
   try {const axis=RawEEG.timeAxis(state.data,{rate:Number($('rate').value),column:Number($('timeColumn').value),unit:$('timeUnit').value});
     axis.filterRate=$('filterTiming').value==='samples' || state.data.rateDeclared || state.rateConfirmed || Number($('timeColumn').value)<0?Number($('rate').value):1/axis.median;
-    state.filterCache.clear();state.axis=axis;
+    state.filterCache.clear();state.driftCache.clear();state.axis=axis;
     const view=RawEEG.viewport(state.start,state.span,axis.duration);Object.assign(state,view);
     $('duration').textContent=clock(axis.duration);$('timeSource').textContent=axis.source;$('totalTime').textContent=clock(axis.duration);
     for(const id of ['seek','prev','next','play'])$(id).disabled=false;
@@ -138,7 +146,7 @@ async function openFile(file) {
   stop();const id=++state.loadId;$('status').textContent='CSV 읽는 중…';
   try {if(file.size>80*1024*1024)throw new Error('최대 파일 크기는 80 MB입니다.');
     const text=await file.text();await new Promise(r=>setTimeout(r,0));if(id!==state.loadId)return;
-    const data=RawEEG.parse(text);data.railLocked=data.channels.map(ch=>ch.values.every(v=>v===8388607)||ch.values.every(v=>v===-8388608));state.data=data;state.axis=null;state.view='raw';state.filterCache.clear();state.start=0;state.span=10;state.rateConfirmed=false;state.labels=data.channels.map(ch=>ch.label);
+    const data=RawEEG.parse(text);data.railLocked=data.channels.map(ch=>ch.values.every(v=>v===8388607)||ch.values.every(v=>v===-8388608));state.data=data;state.axis=null;state.view='raw';state.filterCache.clear();state.driftCache.clear();state.start=0;state.span=10;state.rateConfirmed=false;state.labels=data.channels.map(ch=>ch.label);
     state.selected=new Set(data.channels.slice(0,8).map((_,i)=>i));state.pairs=Array.from({length:Math.min(8,data.channels.length-1)},(_,i)=>({a:i,b:i+1}));
     $('filename').textContent=file.name;$('samples').textContent=`${data.count.toLocaleString()} / ${data.channels.length}`;
     $('rate').value=data.rate;$('timeUnit').value='auto';$('inputUnit').value='auto';$('outputUnit').value='original';
@@ -173,21 +181,25 @@ function draw() {
   for(let t=first;t<=state.start+state.span+1e-8;t+=step/5){const major=Math.abs(t/step-Math.round(t/step))<1e-5;c.strokeStyle=major?'#bed7ba':'#deebd9';c.lineWidth=major?1:.6;c.beginPath();c.moveTo(x(t),g.top);c.lineTo(x(t),h-g.bottom);c.stroke();if(major){c.fillStyle='#597052';c.fillText(`${fmt(t)} s`,x(t),h-10);}}
   if(state.axis){
     const times=state.axis.times,from=Math.max(0,RawEEG.lowerBound(times,state.start)-1),to=Math.min(times.length,RawEEG.lowerBound(times,state.start+state.span)+1);
+    const visible=state.traces.map(tr=>tr.error?null:RawEEG.summarize(tr.values.subarray(RawEEG.lowerBound(times,state.start),RawEEG.lowerBound(times,state.start+state.span+1e-9))));
+    const centers=state.traces.map((tr,i)=>$('baseline').value==='zero'?0:$('baseline').value==='window'?(visible[i]?.center || 0):tr.center);
+    const amplitudes=state.traces.map((tr,i)=>{const stats=$('scale').value==='window'?visible[i]:tr;return !stats || !stats.valid?0:2*Math.max(Math.abs(stats.min-centers[i]),Math.abs(stats.max-centers[i]));});
     state.traces.forEach((tr,i)=>{
       const top=g.top+i*g.lane,cy=top+g.lane/2;
       c.textAlign='left';c.fillStyle='#263d2d';c.font='600 11px "Segoe UI",sans-serif';
       const names=tr.name.split(' − ');names.forEach((n,j)=>c.fillText(ellipsis(c,(j?'− ':'')+n,g.left-15),8,cy-9+j*14));
       c.font='9px "Segoe UI",sans-serif';c.fillStyle='#788672';
       if(tr.error){c.fillStyle='#a56a2b';c.fillText(ellipsis(c,tr.error,pw-10),g.left+7,cy);return;}
-      const center=$('baseline').value==='zero'?0:tr.center;
-      const amplitude=t=>$('baseline').value==='zero'?Math.max(Math.abs(t.min),Math.abs(t.max))*2:t.span;
-      const autoRange=state.view==='compare'?Math.max(...state.traces.filter(t=>!t.error).map(amplitude)):amplitude(tr);
-      const scale=$('scale').value==='auto' ? autoRange*1.35/4 : Number($('scale').value);
+      const center=centers[i];
+      const autoRange=state.view==='compare'?Math.max(...amplitudes):amplitudes[i];
+      const scale=['auto','window'].includes($('scale').value) ? autoRange*1.35/4 : Number($('scale').value);
       const perDiv=Math.max(scale,1e-9),y=v=>cy-(v-center)/perDiv*(g.lane/5);
       c.fillText(ellipsis(c,`기준 ${fmt(center)}`,g.left-13),8,cy+(names.length>1?28:10));
       for(let d=-2;d<=2;d++){const yy=cy+d*g.lane/5;c.strokeStyle=d===0?'#bed4b7':'#e2ebde';c.lineWidth=d===0?.8:.5;c.beginPath();c.moveTo(g.left,yy);c.lineTo(w-g.right,yy);c.stroke();}
       c.save();c.beginPath();c.rect(g.left,top,pw,g.lane);c.clip();c.lineWidth=.9;c.strokeStyle=state.view==='compare'?['#263e32','#a25c27','#236caa'][i]:state.view==='filtered'?'#8b4f24':state.mode==='raw'?'#263e32':'#254d65';
-      tracePath(c,tr.values,times,from,to,x,y,state.view!=='raw'?1.5/state.axis.filterRate:state.axis.median*2.5,pw);c.restore();
+      tracePath(c,tr.values,times,from,to,x,y,['filtered','compare'].includes(state.view)?1.5/state.axis.filterRate:state.axis.median*2.5,pw);
+      if(tr.trend){c.strokeStyle='#be641b';c.lineWidth=2;tracePath(c,tr.trend,times,from,to,x,y,state.axis.median*2.5,pw);}
+      c.restore();
       c.fillStyle='#6c8066';c.textAlign='right';c.font='9px "Segoe UI",sans-serif';c.fillText(fmt(perDiv),w-5,cy-3);c.fillText('/ div',w-5,cy+9);
     });
     const v=RawEEG.viewport(state.start,state.span,state.axis.duration);state.start=v.start;state.span=v.span;
@@ -197,6 +209,19 @@ function draw() {
     $('selection').hidden=false;$('selection').style.left=`${100*state.start/state.axis.duration}%`;$('selection').style.width=`${100*state.span/state.axis.duration}%`;
     $('position').textContent=`${fmt(state.start)} / ${fmt(state.axis.duration)} s`;
   } else {$('selection').hidden=true;}
+  drawDriftMetrics();
+}
+function drawDriftMetrics(){
+  if(state.view!=='drift')return;
+  $('driftMetrics').replaceChildren();
+  if(!state.axis)return;
+  const times=state.axis.times,from=RawEEG.lowerBound(times,state.start),to=RawEEG.lowerBound(times,state.start+state.span+1e-9);
+  $('driftMeta').textContent=`${clock(state.start)} – ${clock(state.start+state.span)} · ${unitLabel()} · 추세 ${$('driftWindow').value} s`;
+  for(const tr of state.traces){
+    const row=document.createElement('tr'),m=tr.error?null:EEGDrift.metrics(tr.values,tr.trend,times,from,to,state.axis.median*2.5);
+    for(const value of [tr.name,m?fmt(m.peakToPeak):'—',m?fmt(m.drift):'—',m?fmt(m.step):'—']){const cell=document.createElement('td');cell.textContent=value;row.append(cell);}
+    $('driftMetrics').append(row);
+  }
 }
 function drawOverview() {
   const {c,w,h}=canvasSize($('overview'));c.clearRect(0,0,w,h);if(!state.axis)return;
@@ -241,8 +266,10 @@ function demo() {
   for(let i=0;i<250*90;i++) {
     const t=i/250;
     rows.push([i*4000,...names.map((_,ch)=>{
+      const drift=90*Math.sin(2*Math.PI*.035*t+ch*.3)+.7*t;
+      const motion=t>=48 && t<51?80*Math.sin(2*Math.PI*3*(t-48))*(1+ch*.1):0;
       const burst=Math.exp(-(((t-26-ch*.15)/.6)**2))*70;
-      return (20*Math.sin(2*Math.PI*(8+ch*.45)*t+ch*.7)+8*Math.sin(2*Math.PI*1.2*t)+3*Math.cos(2*Math.PI*31*t+ch)+12*Math.sin(2*Math.PI*60.2*t+ch*.3)+burst).toFixed(4);
+      return (20*Math.sin(2*Math.PI*(8+ch*.45)*t+ch*.7)+8*Math.sin(2*Math.PI*1.2*t)+3*Math.cos(2*Math.PI*31*t+ch)+12*Math.sin(2*Math.PI*60.2*t+ch*.3)+burst+drift+motion).toFixed(4);
     })].join(','));
   }
   openFile(new File([rows.join('\n')],'DEMO_synthetic_90s.csv',{type:'text/csv'}));
@@ -250,6 +277,11 @@ function demo() {
 $('open').onclick=$('emptyOpen').onclick=()=>$('file').click();$('file').onchange=e=>openFile(e.target.files[0]);$('demo').onclick=demo;
 $('rawTab').onclick=()=>setMode('raw');$('bipolarTab').onclick=()=>setMode('bipolar');
 $('rawView').onclick=()=>setView('raw');$('filteredView').onclick=()=>setView('filtered');
+$('driftView').onclick=()=>{setView('drift');if(state.axis)move(state.start,30);};
+$('driftWindow').onchange=()=>{stop();rebuild();};
+$('driftPreset').onclick=()=>{stop();$('baseline').value='center';$('scale').value='auto';if(state.axis)Object.assign(state,RawEEG.viewport(state.start,30,state.axis.duration));rebuild();};
+$('fitWindow').onclick=()=>{stop();$('baseline').value='window';$('scale').value='window';rebuild();};
+$('fullRecord').onclick=()=>{stop();if(state.axis)move(0,state.axis.duration);};
 $('compareView').onclick=()=>setView('compare');$('compareChannel').onchange=rebuild;
 $('filterTiming').onchange=()=>{stop();state.filterCache.clear();if(state.data)applyTime();else updateViewStatus();};
 for(const id of ['hpOn','hpHz','lpOn','lpHz','notchOn','notchHz','notchQ','lineMethod','harmonics','filterOrder'])$(id).onchange=()=>{stop();state.filterCache.clear();rebuild();};
@@ -272,7 +304,7 @@ $('plot').addEventListener('pointermove',e=>{if(!state.axis||!state.traces.lengt
   if(px<g.left||px>rect.width-g.right){$('cursor').hidden=true;return;}
   const t=state.start+(px-g.left)/(rect.width-g.left-g.right)*state.span;let index=RawEEG.lowerBound(state.axis.times,t);index=Math.min(index,state.data.count-1);if(index>0 && t-state.axis.times[index-1]<state.axis.times[index]-t)index--;
   const lane=Math.max(0,Math.min(state.traces.length-1,Math.floor((py-g.top)/g.lane))),tr=state.traces[lane];
-  $('cursor').textContent=`${clock(state.axis.times[index])} · ${tr.name}\n${tr.error || fmt(tr.values[index])+' '+unitLabel()}`;$('cursor').hidden=false;
+  $('cursor').textContent=`${clock(state.axis.times[index])} · ${tr.name}\n${tr.error || fmt(tr.values[index])+' '+unitLabel()+(tr.trend?' · 추세 '+fmt(tr.trend[index])+' '+unitLabel():'')}`;$('cursor').hidden=false;
 });$('plot').addEventListener('pointerleave',()=>{$('cursor').hidden=true;});
 $('export').onclick=()=>{
   const source=$('plot'),out=document.createElement('canvas');out.width=source.width;out.height=source.height+148;
@@ -281,7 +313,7 @@ $('export').onclick=()=>{
   c.fillText(`${$('interval').textContent} | ${unitLabel()} | ${$('baselineLabel').textContent}`,14,51,out.width-28);
   c.fillText(`${$('filterStatus').textContent} | Fs ${fmt(state.axis.filterRate)} Hz`,14,77,out.width-28);c.drawImage(source,0,132);
   if(state.view==='compare')c.fillText(`${$('compareChannel').selectedOptions[0]?.textContent || ''} | Q ${$('notchQ').value} | ${$('lineStats').textContent}`,14,97,out.width-28);
-  c.fillText(state.view==='raw'?'Raw | 원본 시간·샘플 보존':$('timingStatus').textContent,14,119,out.width-28);
+  c.fillText(['raw','drift'].includes(state.view)?'Raw | 원본 시간·샘플 보존':$('timingStatus').textContent,14,119,out.width-28);
   out.toBlob(blob=>{if(!blob)return;const url=URL.createObjectURL(blob),a=document.createElement('a');a.href=url;
     a.download=`raw-EEG-${state.mode}-${state.view}-${state.start.toFixed(2)}s.png`;a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);});
 };

@@ -2,10 +2,10 @@
 <html lang="ko">
 <head>
   <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>raw EEG</title><link rel="stylesheet" href="styles.css?v=sample-order-v1">
+  <title>raw EEG</title><link rel="stylesheet" href="styles.css?v=drift-v1">
   <script defer src="vendor/papaparse.min.js"></script><script defer src="vendor/lucide.min.js"></script>
   <script defer src="vendor/fili.min.js"></script><script defer src="vendor/dpss.js"></script><script defer src="line-noise.js?v=line-noise-v1"></script><script defer src="filters.js?v=sample-order-v1"></script><script defer src="spectrum.js?v=sample-order-v1"></script>
-  <script defer src="core.js?v=line-noise-v1"></script><script defer src="app.js?v=sample-order-v1"></script>
+  <script defer src="drift.js?v=drift-v1"></script><script defer src="core.js?v=line-noise-v1"></script><script defer src="app.js?v=drift-v1"></script>
 </head>
 <body>
   <header class="topbar">
@@ -36,7 +36,7 @@
       <div class="local-mark"><i data-lucide="hard-drive"></i>로컬 파일 · 원본 보존</div>
     </aside>
     <main>
-      <div class="viewbar"><div class="tabs" role="tablist" aria-label="전극 구성"><button id="rawTab" role="tab" aria-selected="true">채널</button><button id="bipolarTab" role="tab" aria-selected="false">Bipolar</button></div><div class="tabs processing" role="tablist" aria-label="필터 보기"><button id="rawView" role="tab" aria-selected="true">Raw</button><button id="filteredView" role="tab" aria-selected="false">Filtered</button><button id="compareView" role="tab" aria-selected="false">비교</button></div><span id="viewCount" class="muted">0 / 8 traces</span><button id="export" class="icon-button" title="현재 파형 PNG 저장" aria-label="현재 파형 PNG 저장" disabled><i data-lucide="download"></i></button></div>
+      <div class="viewbar"><div class="tabs" role="tablist" aria-label="전극 구성"><button id="rawTab" role="tab" aria-selected="true">채널</button><button id="bipolarTab" role="tab" aria-selected="false">Bipolar</button></div><div class="tabs processing" role="tablist" aria-label="필터 보기"><button id="rawView" role="tab" aria-selected="true">Raw</button><button id="filteredView" role="tab" aria-selected="false">Filtered</button><button id="driftView" role="tab" aria-selected="false">드리프트</button><button id="compareView" role="tab" aria-selected="false">비교</button></div><span id="viewCount" class="muted">0 / 8 traces</span><button id="export" class="icon-button" title="현재 파형 PNG 저장" aria-label="현재 파형 PNG 저장" disabled><i data-lucide="download"></i></button></div>
       <div class="filterbar" aria-label="필터 설정">
         <div class="filter-control"><label><input id="hpOn" type="checkbox" checked>HPF</label><input id="hpHz" type="number" min="0.01" step="0.1" value="0.5" aria-label="HPF 주파수"><span>Hz</span></div>
         <div class="filter-control"><label><input id="lpOn" type="checkbox" checked>LPF</label><input id="lpHz" type="number" min="0.01" step="1" value="45" aria-label="LPF 주파수"><span>Hz</span></div>
@@ -52,14 +52,23 @@
       <div class="toolbar">
         <label>구간<input id="window" type="number" value="10" min="0.05" step="1"><span>s</span></label>
         <label>표시 단위<select id="outputUnit"><option value="original">CSV 원본</option><option value="uv">µV</option></select></label>
-        <label>세로 배율<select id="scale"><option value="auto">자동 / 채널별</option><option value="10">10 / div</option><option value="20">20 / div</option><option value="50">50 / div</option><option value="100">100 / div</option><option value="500">500 / div</option><option value="1000">1000 / div</option><option value="10000">10000 / div</option></select></label>
-        <label>표시 기준선<select id="baseline"><option value="center">채널 중앙</option><option value="zero">0</option></select></label>
+        <label>세로 배율<select id="scale"><option value="auto">자동 / 기록 전체</option><option value="window">자동 / 현재 구간</option><option value="10">10 / div</option><option value="20">20 / div</option><option value="50">50 / div</option><option value="100">100 / div</option><option value="500">500 / div</option><option value="1000">1000 / div</option><option value="10000">10000 / div</option></select></label>
+        <label>표시 기준선<select id="baseline"><option value="center">기록 전체 중앙</option><option value="window">현재 구간 중앙</option><option value="zero">0</option></select></label>
+      </div>
+      <div id="driftControls" class="drift-controls" hidden>
+        <div class="drift-options"><span class="raw-key">━ 원본</span><span class="drift-key">━ 느린 추세</span><label>추세 창<select id="driftWindow"><option value="0.5">0.5 s</option><option value="1" selected>1 s</option><option value="2">2 s</option><option value="5">5 s</option></select></label><button id="driftPreset">30초 · 드리프트 보기</button><button id="fitWindow">현재 구간 맞춤</button><button id="fullRecord">전체 기록</button></div>
+        <p>원본 위에 이동평균 추세를 겹쳐 표시합니다. HPF / LPF / 전원 잡음 제거는 적용하지 않습니다. 추세 창이 길수록 느린 변화를 봅니다.</p>
       </div>
       <div id="notice" role="status" hidden></div>
       <section class="recording">
         <div class="plot-heading"><h2 id="plotTitle">Raw traces</h2><span id="interval">00:00.000 – 00:10.000</span></div>
         <div id="plotWrap"><canvas id="plot" aria-label="채널별 EEG 원본 파형"></canvas><div id="empty"><i data-lucide="file-chart-line"></i><strong>CSV 파일 열기</strong><button id="emptyOpen">파일 선택</button></div><output id="cursor" hidden></output></div>
         <div class="plot-footer"><span id="unitLabel">단위 미지정</span><span id="baselineLabel">표시 기준선: 채널 중앙</span></div>
+      </section>
+      <section id="driftSection" class="drift-section" hidden aria-label="현재 구간 드리프트 수치">
+        <div class="plot-heading"><h2>드리프트 · 흔들림 수치</h2><span id="driftMeta">현재 표시 구간</span></div>
+        <div class="drift-table-wrap"><table class="drift-table"><thead><tr><th scope="col">채널 / 쌍</th><th scope="col">원본 변동 폭 (p-p)</th><th scope="col">느린 추세 변동 폭 (p-p)</th><th scope="col">최대 인접 샘플 변화</th></tr></thead><tbody id="driftMetrics"></tbody></table></div>
+        <p class="drift-note">p-p = 최댓값 − 최솟값. 수치는 신호 변화량이며 움직임 원인을 판정하지 않습니다. 추세는 CSV 시간 기준 ±추세 창/2 내 샘플의 평균이며, 빈 값·시간 단절을 넘지 않습니다. 기록/단절 경계에서는 짧은 창을 사용합니다.</p>
       </section>
       <section class="navigation" aria-label="시간 탐색">
         <div class="navigation-heading"><h2>기록 타임라인</h2><span id="totalTime">00:00.000</span></div>
